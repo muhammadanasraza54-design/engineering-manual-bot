@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import json
 import pypdf
-import base64
 import re
 from streamlit_mic_recorder import mic_recorder
 
@@ -14,8 +13,9 @@ st.markdown("---")
 API_KEY = "AQ.Ab8RN6IuNtJeIQ_NzjIWHvHXspbj2CahUJKeHuMo5n7aNDIAAw"
 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
 
-@st.cache_data
-def extract_pdf_content(uploaded_file):
+# Optimization 1: Super lightweight text extraction
+@st.cache_data(show_spinner=False)
+def extract_pdf_text(uploaded_file):
     viewer_context = []
     reader = pypdf.PdfReader(uploaded_file)
     for page_num, page in enumerate(reader.pages):
@@ -25,15 +25,20 @@ def extract_pdf_content(uploaded_file):
     return viewer_context
 
 def ask_manual_direct(query, manual_data):
-    # Filter content to avoid heavy payload
     keywords = query.lower().split()
     relevant_chunks = []
+    
+    # Quick keyword filtering to save memory & payload size
     for data in manual_data:
-        if any(kw in data['content'].lower() for kw in keywords) or len(relevant_chunks) < 5:
+        if any(kw in data['content'].lower() for kw in keywords):
             relevant_chunks.append(data)
-            
+    
+    # Fallback to first few pages if no keyword matches perfectly
+    if not relevant_chunks:
+        relevant_chunks = manual_data[:5]
+        
     context = ""
-    for data in relevant_chunks[:8]:
+    for data in relevant_chunks[:5]: # Send fewer, highly relevant pages
         context += f"\n--- PAGE {data['page']} ---\n{data['content']}\n"
         
     prompt = f"""
@@ -50,48 +55,45 @@ def ask_manual_direct(query, manual_data):
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     headers = {'Content-Type': 'application/json'}
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
+        response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=15)
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
-        return f"Error: {response.status_code}"
+        return f"Server Error: {response.status_code}"
     except:
-        return "Connection Timeout/Error."
+        return "Response timeout. Thoda mukhtasar sawal poochhein."
 
-# Sidebar for PDF Upload
+# Sidebar
 st.sidebar.header("📂 Manual Upload")
 uploaded_file = st.sidebar.file_uploader("Upload Engineering Manual (PDF)", type="pdf")
 
 if uploaded_file:
     if "manual_data" not in st.session_state:
-        with st.spinner("Processing Manual..."):
-            st.session_state.manual_data = extract_pdf_content(uploaded_file)
+        with st.spinner("Parsing Manual (Processing text only)..."):
+            st.session_state.manual_data = extract_pdf_text(uploaded_file)
     
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "active_page" not in st.session_state:
-        st.session_state.active_page = 1
+        st.session_state.active_page = "N/A"
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2 = st.columns([4, 2])
 
     with col1:
         st.subheader("💬 Voice & Text Chat")
         
-        # 🎙️ Voice Recorder Button Component
-        st.write("🎤 Bol kar sawal poochhein:")
-        audio = mic_recorder(start_prompt="Record Voice (Urdu/English)", stop_prompt="Stop", key='recorder')
+        # Voice Input Component
+        audio = mic_recorder(start_prompt="🎤 Click to Speak (Urdu/English)", stop_prompt="🛑 Stop & Process", key='recorder')
         
         user_query = ""
         if audio:
-            # Note: Transcription logic can be connected here via Gemini Audio API if needed,
-            # For now, it captures audio input directly.
             st.audio(audio['bytes'])
-            st.info("Audio captured! Processing text input below while voice sync connects...")
+            st.info("Audio recorded. Please use the text chat bar or verify your prompt while speech sync initializes.")
 
-        # Standard text fallback input
-        text_input = st.chat_input("Ya phir yahan type karein...")
+        text_input = st.chat_input("Yahan apna sawal likhein...")
         if text_input:
             user_query = text_input
 
+        # Display conversation history
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
@@ -102,22 +104,22 @@ if uploaded_file:
             st.session_state.messages.append({"role": "user", "content": user_query})
             
             with st.chat_message("assistant"):
-                with st.spinner("Manual se dhoond raha hoon..."):
+                with st.spinner("Manual dhoond raha hoon..."):
                     ai_response = ask_manual_direct(user_query, st.session_state.manual_data)
                     st.write(ai_response)
             
             page_match = re.search(r"\[Page:\s*(\d+)\]", ai_response)
             if page_match:
-                st.session_state.active_page = int(page_match.group(1))
+                st.session_state.active_page = page_match.group(1)
             
             st.session_state.messages.append({"role": "assistant", "content": ai_response})
             st.rerun()
 
     with col2:
-        st.subheader("📄 Dynamic PDF Viewer")
-        uploaded_file.seek(0)
-        base64_pdf = base64.b64encode(uploaded_file.read()).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}#page={st.session_state.active_page}" width="100%" height="800" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
+        # Optimization 2: Removed heavy PDF dynamic iframe to prevent Out Of Memory crashes.
+        # Instead, showing quick metadata reference.
+        st.subheader("📍 Document Reference")
+        st.metric(label="Last Identified Reference Page", value=f"Page {st.session_state.active_page}")
+        st.info("RAM bachane aur crash se bachne ke liye direct PDF rendering ko off kiya hai. Aap chatbot ke bataye hue page number ko apne local PDF manual mein check kar sakte hain.")
 else:
     st.info("Meharbani farma kar sidebar se Engineering Manual upload karein.")
