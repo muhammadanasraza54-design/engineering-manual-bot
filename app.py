@@ -1,59 +1,74 @@
 import streamlit as st
-import pypdf
+import requests
+import json
+import base64
 import re
-from collections import Counter
 from streamlit_mic_recorder import mic_recorder
 
-st.set_page_config(layout="wide", page_title="Engineering Manual AI")
+st.set_page_config(layout="wide", page_title="TCF Engineering Manual AI")
 
-st.title("🏗️ TCF Engineering Manual Search Assistant (No-Key Version)")
+st.title("🏗️ TCF Scanned Engineering Manual AI Assistant")
 st.markdown("---")
 
-# Super lightweight text extraction
-@st.cache_data(show_spinner=False)
-def extract_pdf_text(uploaded_file):
-    viewer_context = []
-    reader = pypdf.PdfReader(uploaded_file)
-    for page_num, page in enumerate(reader.pages):
-        text = page.extract_text()
-        if text:
-            viewer_context.append({"page": page_num + 1, "content": text.lower()})
-    return viewer_context
+# Streamlit Secrets se safe tareeqay se key uthana
+if "GEMINI_API_KEY" in st.secrets:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+else:
+    st.error("🔑 API Key nahi mili! Please App Settings -> Secrets mein 'GEMINI_API_KEY' set karein.")
+    st.stop()
 
-# Fast local keyword matching instead of AI API
-def search_manual_local(query, manual_data):
-    keywords = [kw.strip() for kw in query.lower().split() if len(kw.strip()) > 2]
-    if not keywords:
-        return "Meharbani farma kar sahi se search term likhein ya bolein.", "N/A"
-        
-    page_scores = {}
-    for data in manual_data:
-        score = sum(data['content'].count(kw) for kw in keywords)
-        if score > 0:
-            page_scores[data['page']] = score
-            
-    if not page_scores:
-        return f"Maazrat! Pure manual mein kahin bhi **'{query}'** nahi mila.", "N/A"
-        
-    # Sort pages by best keyword match match count
-    sorted_pages = sorted(page_scores.items(), key=lambda x: x[1], reverse=True)
-    best_page = sorted_pages[0][0]
-    
-    top_matches_text = f"🔍 **Search Results for '{query}':**\n\n"
-    top_matches_text += f"✅ Sab se relevant data **Page {best_page}** par mila hai (Keywords matched: {sorted_pages[0][1]} times).\n\n"
-    top_matches_text += "📍 **Deegar relevant pages:** " + ", ".join([f"Page {p}" for p, s in sorted_pages[1:6]])
-    
-    return top_matches_text, best_page
+url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 
-# Sidebar
+def ask_gemini_scanned_pdf(query, pdf_bytes):
+    # Pure scanned PDF ko base64 mein convert karna taake Gemini direct images parh sake
+    encoded_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+    
+    prompt = f"""
+    Aap ek expert engineering structural engineer hain jo TCF (The Citizens Foundation) ke schools ke liye kaam kar rahe hain.
+    Aap ke paas poora scanned engineering manual data niche inline_data mein attach hai.
+    
+    Instructions:
+    1. User ke sawal ka jawab strictly is manual ko dekh kar dein. Scanned text/images ko dhyan se parhein.
+    2. Agar user Urdu mein poochhe toh Urdu mein jawab dein, English mein poochhe toh English mein.
+    3. Apne jawab ke aakhir mein exact page number zaroor likhein is format mein: [Page: X]
+    
+    User Question: {query}
+    """
+    
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {
+                    "inline_data": {
+                        "mime_type": "application/pdf",
+                        "data": encoded_pdf
+                    }
+                }
+            ]
+        }]
+    }
+    
+    headers = {'Content-Type': 'application/json'}
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=45)
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        elif response.status_code == 401:
+            return "Error 401: Streamlit Secrets mein mojud API Key valid nahi hai. Dubara check karein."
+        return f"Server Error: {response.status_code}"
+    except Exception as e:
+        return "Processing mein thoda zyada waqt lag raha hai. Meharbani farma kar thoda mukhtasar sawal dubara likhein."
+
+# Sidebar upload
 st.sidebar.header("📂 Manual Upload")
-uploaded_file = st.sidebar.file_uploader("Upload Engineering Manual (PDF)", type="pdf")
+uploaded_file = st.sidebar.file_uploader("Upload Scanned Engineering Manual (PDF)", type="pdf")
 
 if uploaded_file:
-    if "manual_data" not in st.session_state:
-        with st.spinner("Manual scan ho raha hai... (Sirf ek baar waqt lagega)"):
-            st.session_state.manual_data = extract_pdf_text(uploaded_file)
-    
+    # Read bytes once
+    if "pdf_bytes" not in st.session_state:
+        st.session_state.pdf_bytes = uploaded_file.read()
+        
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "active_page" not in st.session_state:
@@ -62,21 +77,19 @@ if uploaded_file:
     col1, col2 = st.columns([4, 2])
 
     with col1:
-        st.subheader("💬 Voice & Text Search")
+        st.subheader("💬 Voice & Text Chat")
         
-        # Voice Button
-        audio = mic_recorder(start_prompt="🎤 Click to Speak (Urdu/English)", stop_prompt="🛑 Stop & Search", key='recorder')
+        audio = mic_recorder(start_prompt="🎤 Click to Speak (Urdu/English)", stop_prompt="🛑 Stop & Process", key='recorder')
         
         user_query = ""
         if audio:
             st.audio(audio['bytes'])
-            st.info("Aap ki voice record ho gayi hai! Neeche chat bar mein us topic ka naam (jaise 'gate') type kar ke enter karein taake sync complete ho jaye.")
+            st.info("Voice record ho chuki hai. Sync complete karne ke liye niche text bar mein 'gate' ya apna topic likh kar enter karein.")
 
-        text_input = st.chat_input("Kiske baare mein dhoondna hai? (e.g., gate, boundary, concrete)...")
+        text_input = st.chat_input("Scanned manual se mutaliq kuch bhi poochhein (e.g., gate detail, boundary wall)...")
         if text_input:
             user_query = text_input
 
-        # Conversation History Display
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
@@ -87,17 +100,20 @@ if uploaded_file:
             st.session_state.messages.append({"role": "user", "content": user_query})
             
             with st.chat_message("assistant"):
-                with st.spinner("Manual dhoond raha hoon..."):
-                    result_text, best_page = search_manual_local(user_query, st.session_state.manual_data)
-                    st.write(result_text)
-                    st.session_state.active_page = best_page
+                with st.spinner("Scanned PDF ke pages parakh raha hoon..."):
+                    ai_response = ask_gemini_scanned_pdf(user_query, st.session_state.pdf_bytes)
+                    st.write(ai_response)
             
-            st.session_state.messages.append({"role": "assistant", "content": result_text})
+            page_match = re.search(r"\[Page:\s*(\d+)\]", ai_response)
+            if page_match:
+                st.session_state.active_page = page_match.group(1)
+            
+            st.session_state.messages.append({"role": "assistant", "content": ai_response})
             st.rerun()
 
     with col2:
         st.subheader("📍 Document Reference")
-        st.metric(label="Best Match Page", value=f"Page {st.session_state.active_page}")
-        st.info("Yeh tool Bina kisi API Key ke 100% free chal raha hai. Chatbot jo page number bataye, aap usay apne computer par open PDF mein check kar sakte hain.")
+        st.metric(label="Last Identified Reference Page", value=f"Page {st.session_state.active_page}")
+        st.info("Chunkay aap ka manual scanned image format mein hai, AI isay direct text ke bajaye vision se analyze kar raha hai. Bataye gaye page number ko local PDF par double-check kar lein.")
 else:
     st.info("Meharbani farma kar sidebar se Engineering Manual upload karein.")
