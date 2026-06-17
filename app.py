@@ -51,7 +51,7 @@ def search_keyword(query, manual_data):
 
 # Sidebar setup
 st.sidebar.header("📂 Data Upload")
-uploaded_txt = st.sidebar.file_uploader("Upload Generated Text Manual (manual_text.txt)", type="txt")
+uploaded_txt = st.sidebar.file_uploader("Upload Generated Text Manual (manual_text_fixed.txt)", type="txt")
 
 if uploaded_txt:
     if "manual_data" not in st.session_state:
@@ -90,4 +90,4 @@ if uploaded_txt:
         st.metric(label="Target Document Page", value=f"Page {st.session_state.active_page}")
         st.success("App completely optimized hai aur memory safe chal rahi hai.")
 else:
-    st.info("Sidebar se local PC par bani hui 'manual_text.txt' file upload karein.")
+    st.info("Sidebar se Colab se download ki hui 'manual_text_fixed.txt' file upload karein.")
